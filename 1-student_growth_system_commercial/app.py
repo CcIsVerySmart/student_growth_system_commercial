@@ -840,12 +840,34 @@ def page_settings():
     st.markdown("""
     <div class="danger-zone">
       <div class="danger-zone-title">⚠️ 危险操作区域</div>
-      <div class="danger-zone-desc">以下操作不可撤销，将永久删除所有学生库、企业库、政策库和缓存数据。请确认后再操作。</div>
+      <div class="danger-zone-desc">以下操作不可撤销，将永久删除学生库、企业库、全部原始上传文件、导入记录、分析及聊天结果和缓存，政策恢复默认。系统配置和表单模板保留。</div>
     </div>
     """, unsafe_allow_html=True)
-    if st.button("清空全部数据（不可撤销）", use_container_width=True):
-        clear_all_data()
-        st.success("已清空学生库、企业库、政策库和缓存。")
+    result = st.session_state.pop("clear_all_result", None)
+    if result:
+        if result["cleared"]:
+            st.success(f"{result['message']} 共删除 {result['removed_files']} 个文件。")
+        else:
+            st.error(result["message"])
+            for error in result["errors"]:
+                st.text(error)
+    with st.form("clear_all_confirmation"):
+        acknowledged = st.checkbox("我已知悉删除范围，确认永久删除且无法撤销")
+        confirmation = st.text_input("请输入“清空全部数据”以确认")
+        submitted = st.form_submit_button("清空全部数据（不可撤销）", use_container_width=True)
+    if submitted:
+        if not acknowledged or confirmation != "清空全部数据":
+            st.warning("请勾选确认框并准确输入“清空全部数据”，尚未执行删除。")
+        else:
+            result = clear_all_data()
+            # Clear uploaded widget values, profiles, reports and chat in this session.
+            # Preserve only authentication and the non-personal web-search preference.
+            for key in list(st.session_state):
+                if key not in {"admin_ok", "use_web_jobs"}:
+                    del st.session_state[key]
+            st.cache_data.clear()
+            st.session_state["clear_all_result"] = result
+            st.rerun()
 
 
 def page_chat():

@@ -2,12 +2,11 @@ from __future__ import annotations
 import json
 import hashlib
 import uuid
-import shutil
 from pathlib import Path
 from typing import Any
 from .config import (
     STUDENTS_DB, COMPANIES_DB, POLICY_DB, QUERY_CACHE_DB, IMPORTED_FILES_DB,
-    DEFAULT_POLICY_SUMMARY, UPLOAD_DIR
+    DEFAULT_POLICY_SUMMARY, UPLOAD_DIR, CACHE_DIR
 )
 
 
@@ -122,9 +121,60 @@ def remove_import_source(source_id: str) -> dict:
     return {"removed": True, "kind": kind, "message": "已移除文件及其提取结果，并清空相关缓存。"}
 
 
-def clear_all_data():
-    save_students([])
-    save_companies([])
-    save_policy(DEFAULT_POLICY_SUMMARY)
-    save_cache({})
-    save_imported_files([])
+def _clear_directory_contents(directory: Path, errors: list[str]) -> int:
+    """Keep directory scaffolding; never follow symlinks outside managed storage."""
+    removed = 0
+    try:
+        if directory.is_symlink():
+            raise OSError("数据目录不能是符号链接")
+        directory.mkdir(parents=True, exist_ok=True)
+        children = list(directory.iterdir())
+    except OSError as exc:
+        errors.append(f"{directory}: {exc}")
+        return removed
+    for child in children:
+        try:
+            if child.is_symlink() or not child.is_dir():
+                child.unlink()
+                removed += 1
+            else:
+                removed += _clear_directory_contents(child, errors)
+        except OSError as exc:
+            errors.append(f"{child}: {exc}")
+    return removed
+
+
+def clear_all_data() -> dict:
+    """Delete managed originals (including orphans), derived data and caches.
+
+    Filesystem deletion is not transactional. On failure, report partial progress
+    and keep import records for troubleshooting/retry; never claim full success.
+    Configuration, form templates and directory scaffolding are preserved.
+    """
+    errors: list[str] = []
+    removed = _clear_directory_contents(UPLOAD_DIR, errors)
+    removed += _clear_directory_contents(CACHE_DIR, errors)
+    if not errors:
+        # Keep provenance until all other resets have succeeded.
+        for path, default in [
+            (STUDENTS_DB, []), (COMPANIES_DB, []),
+            (POLICY_DB, DEFAULT_POLICY_SUMMARY), (QUERY_CACHE_DB, {}),
+        ]:
+            try:
+                save_json(path, default)
+            except OSError as exc:
+                errors.append(f"{path}: {exc}")
+        if not errors:
+            try:
+                save_imported_files([])
+            except OSError as exc:
+                errors.append(f"{IMPORTED_FILES_DB}: {exc}")
+    return {
+        "cleared": not errors,
+        "removed_files": removed,
+        "errors": errors,
+        "message": (
+            "已清空学生库、企业库、导入记录、原始上传文件和缓存，政策已恢复默认。"
+            if not errors else "清理未完成，部分文件可能已删除。请处理以下错误后重试。"
+        ),
+    }
